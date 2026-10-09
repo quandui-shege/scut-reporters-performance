@@ -1,0 +1,15 @@
+/* Optional user-authorized directory writes. Browser storage remains the primary store. */
+(() => {'use strict';let directory=null,latest=null,timer=null,queue=Promise.resolve(),failure='';
+const clean=name=>String(name).replace(/[\\/:*?"<>|]/g,'_').replace(/^\.+/,'_');
+const status=()=>failure?'文件夹保存失败，请重新选择文件夹':directory?'已连接：'+directory.name:'未连接；导出使用浏览器下载';
+async function directoryAt(base,segments){let result=base;for(const name of segments)result=await result.getDirectoryHandle(name,{create:true});return result;}
+async function write(base,segments,name,data){const dir=await directoryAt(base,segments),file=await dir.getFileHandle(clean(name),{create:true}),writer=await file.createWritable();try{await writer.write(data);await writer.close();}catch(error){try{await writer.abort();}catch{}throw error;}}
+function serialize(work){const task=queue.catch(()=>{}).then(work);queue=task;return task;}
+async function choose(){if(typeof window.showDirectoryPicker!=='function')throw Error('当前浏览器不支持选择数据文件夹。请将导出的文件手动保存到分享版的“数据”目录。');let selected;try{selected=await window.showDirectoryPicker({id:'reporter-share-data',mode:'readwrite'});}catch(error){if(error.name==='AbortError')return null;throw Error('浏览器未允许打开数据文件夹，可继续正常下载导出文件。');}const data=selected.name==='数据'?selected:await selected.getDirectoryHandle('数据',{create:true});let snapshot=null;try{const archive=await data.getDirectoryHandle('月度存档'),handle=await archive.getFileHandle('完整存档.json');snapshot=JSON.parse(await (await handle.getFile()).text());if(snapshot.schema!==1||!snapshot.state)throw Error('存档格式不正确');}catch(error){if(error.name!=='NotFoundError')throw Error('数据文件夹存档无法读取，未覆盖文件：'+error.message);}return {directory:data,name:data.name,snapshot};}
+function activate(connection){directory=connection.directory;failure='';}
+function mirror(snapshot){latest=JSON.parse(JSON.stringify({schema:1,state:snapshot.state}));clearTimeout(timer);if(directory)timer=setTimeout(()=>{flush().catch(()=>{});},700);}
+async function flush(){if(!directory||!latest)return;const data=latest,base=directory;return serialize(async()=>{try{const months={...(data.state.monthArchive||{}),[data.state.month]:data.state};for(const [month,source]of Object.entries(months)){if(!/^\d{4}-\d{2}$/.test(month))continue;const state={...source};delete state.monthArchive;await write(base,['月度存档',month],'绩效数据.json',JSON.stringify({schema:1,state},null,2));}await write(base,['月度存档'],'完整存档.json',JSON.stringify(data,null,2));failure='';}catch(error){failure=error.message;const node=document.getElementById('notice');if(node){node.textContent='数据文件夹写入失败。浏览器本地数据仍保留，请重新选择文件夹或导出备份。';node.className='error';}throw error;}});}
+async function exportFile(blob,name){if(!directory)throw Error('尚未选择数据文件夹');const base=directory,folder=/\.xlsx$/i.test(name)?'导出表格':'备份数据';return serialize(()=>write(base,[folder],name,blob));}
+const original=ProgressStore.write;ProgressStore.write=async snapshot=>{await original(snapshot);mirror(snapshot);};
+globalThis.ShareFiles={choose,activate,status,connected:()=>!!directory,exportFile,flush};
+})();
